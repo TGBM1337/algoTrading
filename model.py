@@ -12,7 +12,6 @@ class InputEmbeddings(nn.Module):
         # x = (Batch, Seq_len, input_features) ---> (Batch, Seq_len, d_model)
         x = self.embedding_proj(x)
         x = x * math.sqrt(self.d_model)
-        print("shape:", x.shape)
         return x
     
 class PositionalEncoding(nn.Module):

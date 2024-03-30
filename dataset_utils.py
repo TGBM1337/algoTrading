@@ -2,6 +2,7 @@ import pyfinancialdata
 import pandas as pd
 import numpy as np
 
+
 def normalize_open_close(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     """Normalize with returns open and close prices. Returns two arrays: open and close returns.
@@ -39,7 +40,20 @@ def normalize_timestamp(data: np.ndarray) -> np.ndarray:
 
     dates = data[:, -1]
     norm_dates = [[date.hour / 24, date.minute / 60, date.weekday() / 6, date.day / 31, date.month / 12] for date in dates]
-    return np.asarray(norm_dates)
+    return np.asarray(norm_dates, dtype=np.float32)
+
+
+def convert_nested_arrays_to_floats(nested_arr):
+    """
+    Recursively converts nested arrays of objects into arrays of floats,
+    preserving the nested structure.
+    """
+    # If the input is not an array, convert it directly to float
+    if not isinstance(nested_arr, np.ndarray):
+        return float(nested_arr)
+    # Apply conversion recursively to each element if it is an array
+    return np.array([convert_nested_arrays_to_floats(elem) for elem in nested_arr])
+
 
 def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, first_year: int = 2000, last_year: int = 2024) -> tuple[np.ndarray, np.ndarray]:
 
@@ -53,6 +67,7 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
             data.append(year_data)
         except KeyError:
             continue
+    
     # columns = [time as index], close, high, low, open, volume
     data = pd.concat(data)
     data.drop("price", axis = 1, inplace=True) # price = close
@@ -80,4 +95,4 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
     X = data_splits[:, :src_len, :]
     y = data_splits[:, -tgt_len:, :]
 
-    return X, y
+    return convert_nested_arrays_to_floats(X), convert_nested_arrays_to_floats(y)

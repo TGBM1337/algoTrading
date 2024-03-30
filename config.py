@@ -5,23 +5,26 @@ def get_config():
     config = {
         "security": "EUR_USD",
         "provider": "oanda",
-        "batch_size": 128,
+        "train_batch_size": 128,
+        "val_batch_size": 128,
         "num_epochs": 20,
         "lr": 1e-3,
         "src_len": 256,
         "tgt_len": 32,
         "input_features": 10,
         "y_size": 10,
-        "d_model": 128,
+        "d_model": 64,
         "N": 6,
         "h": 8,
         "d_ff": 2048,
         "dropout": 0.1,
         "model_folder": "weights",
-        "model_basename": "tmodel_",
+        "model_basename": "algoTransformer",
         "preload": "latest",
         "experiment_name": "runs/tmodel",
-        "datasource": "EUR_USD"
+        "datasource": "EUR_USD",
+        "max_train_size": 384,
+        "max_val_size": 384,
     }
 
     return config
@@ -30,7 +33,7 @@ def get_config():
 def get_weights_file_path(config, epoch: str):
 
     model_folder = f"{config['security']}_{config['model_folder']}"
-    model_filename = f"{config['model_basename']}{epoch}.pt"
+    model_filename = f"{config['model_basename']}_{epoch}.pt"
 
     return str(Path(".") / model_folder / model_filename)
 

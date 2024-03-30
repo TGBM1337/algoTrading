@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, Subset
 
 from model import build_transformer
 from dataset_utils import generate_dataset
@@ -17,12 +17,13 @@ import os
 def inference_decoding(model, source, source_mask, seq_len, device):
 
     # Precompute the encoder output and reuse it for every step
-    encoder_output = model.encode(source, source_mask)
+    encoder_output = model.encode(source, source_mask)  #(Batch, src_len, d_model)
     # Initialize the decoder input
-    decoder_input = torch.empty(1, 1).type_as(source).to(device)
+    decoder_input = torch.zeros(128, 1, 10).type_as(source).to(device)
     while True: # Autoregressive generation
         if decoder_input.size(1) == seq_len:
             break
+        
         # build mask for target
         decoder_mask = causal_mask(decoder_input.size(1)).bool().to(device) 
 
@@ -40,9 +41,7 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
     
     model.eval()
 
-    src_seqs = []
-    expected = []
-    predicted = []
+    losses = []
 
     try:
         with os.popen("stty size", "r") as console:
@@ -50,29 +49,28 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
             console_width = int(console_width)
     except:
         console_width = 80
-
+    i = 1
     with torch.no_grad():
         for batch in validation_ds:
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len)
-            encoder_mask = None # default for bidirectional encoding
-            
+            encoder_mask = None # default for bidirectional encoding            
             model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device)
 
-            src_seqs = batch["encoder_input"]
             tgt_seqs = batch["label"]
-            pred_seqs = model_out.detach().cpu().numpy()
-            for src_seq, tgt_seq, pred_seq in zip(src_seqs, tgt_seqs, pred_seqs):
-                src_seqs.append(src_seq)
-                expected.append(tgt_seq)
-                predicted.append(pred_seq)
-        
+            pred_seqs = model_out.detach().cpu()
 
-        # Evaluate the model predictions
-        if writer:
+            # Evaluate the model predictions
             mse_loss = nn.MSELoss()
-            mse = mse_loss(torch.tensor(expected), torch.tensor(predicted))
-            writer.add_scalar(f"{print_msg} MSE", mse, global_step)
-            writer.flush()
+            mse = mse_loss(torch.tensor(tgt_seqs), torch.tensor(pred_seqs))
+            print(f"batch {i}: {mse}")
+            i+=1
+            losses.append(mse)
+
+        val_loss = sum(losses)/len(losses)
+        print("FIGAAAA", val_loss)
+        writer.add_scalar(f"{print_msg} MSE", val_loss, global_step)
+        writer.flush()
+
 
 def get_ds(config):
 
@@ -87,8 +85,13 @@ def get_ds(config):
 
     train_ds, test_ds, val_ds = random_split(full_ds, [train_ds_size, test_ds_size, val_ds_size], generator=torch.Generator().manual_seed(42))
 
-    train_dataloader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True)
-    val_dataloader = DataLoader(val_ds, batch_size = 1, shuffle = True)
+    if config["max_train_size"]:
+        train_ds = Subset(train_ds, range(config["max_train_size"]))
+    if config["max_val_size"]:
+        val_ds = Subset(val_ds, range(config["max_val_size"]))
+
+    train_dataloader = DataLoader(train_ds, batch_size=config["train_batch_size"], shuffle=True)
+    val_dataloader = DataLoader(val_ds, batch_size = config["val_batch_size"], shuffle = True)
     test_dataloader = DataLoader(test_ds, batch_size = 1, shuffle=True) # batch = 1 è strano in inferenza
 
     return train_dataloader, test_dataloader, val_dataloader
@@ -161,7 +164,8 @@ def train_model(config):
             label = batch["label"].to(device) # (b, seq_len)
 
             # Compute the loss using MSE
-            loss = loss_fn(proj_output.view(-1, config["y_size"]), label.view(-1))
+            #loss = loss_fn(proj_output.view(-1, config["y_size"]), label.view(-1))
+            loss = loss_fn(proj_output, label)
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
             # log the loss
