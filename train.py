@@ -21,7 +21,7 @@ def inference_decoding(model, source, source_mask, seq_len, device):
     # Precompute the encoder output and reuse it for every step
     encoder_output = model.encode(source, source_mask)  #(Batch, src_len, d_model)
     # Initialize the decoder input
-    decoder_input = torch.zeros(128, 1, 10).type_as(source).to(device)
+    decoder_input = torch.zeros(encoder_output.shape[0], 1, 10).type_as(source).to(device)
     while True: # Autoregressive generation
         if decoder_input.size(1) == seq_len:
             break
