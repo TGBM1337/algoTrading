@@ -5,9 +5,11 @@ def get_config():
     config = {
         "security": "EUR_USD",
         "provider": "oanda",
+        "start_year": 2000,
+        "end_year": 2024,
         "train_batch_size": 128,
         "val_batch_size": 128,
-        "num_epochs": 20,
+        "num_epochs": 10,
         "lr": 1e-3,
         "src_len": 256,
         "tgt_len": 32,
@@ -18,13 +20,14 @@ def get_config():
         "h": 8,
         "d_ff": 2048,
         "dropout": 0.1,
-        "model_folder": "weights",
+        "model_folder": "checkpoints",
         "model_basename": "algoTransformer",
-        "preload": "latest",
+        "preload": "latest", # "latest" or epoch or None 
         "experiment_name": "runs/tmodel",
         "datasource": "EUR_USD",
-        "max_train_size": 384,
-        "max_val_size": 384,
+        "max_train_size": None,
+        "max_val_size": None,
+        "result_path": "results.json"
     }
 
     return config
@@ -36,6 +39,9 @@ def get_weights_file_path(config, epoch: str):
     model_filename = f"{config['model_basename']}_{epoch}.pt"
 
     return str(Path(".") / model_folder / model_filename)
+
+def get_results_path(config):
+    return f"{config['security']}_{config['model_folder']}/{config['result_path']}"
 
 # Find the latest weights file in the weights folder
 def latest_weight_file_path(config):

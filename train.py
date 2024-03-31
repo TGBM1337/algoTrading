@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader, random_split, Subset
 from model import build_transformer
 from dataset_utils import generate_dataset
 from dataset import SequencesDataset, causal_mask
-from config import get_config, get_weights_file_path, latest_weight_file_path
+from config import get_config, get_weights_file_path, latest_weight_file_path, get_results_path
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -13,6 +13,8 @@ import warnings
 from pathlib import Path
 from tqdm import tqdm
 import os
+import json
+import numpy as np
 
 def inference_decoding(model, source, source_mask, seq_len, device):
 
@@ -37,7 +39,7 @@ def inference_decoding(model, source, source_mask, seq_len, device):
     return decoder_input.squeeze(0)
 
 
-def run_validation(model, validation_ds, seq_len, device, print_msg, global_step, writer):
+def run_validation(model, validation_ds, seq_len, device, print_msg, global_step, writer, epoch, results):
     
     model.eval()
 
@@ -49,9 +51,10 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
             console_width = int(console_width)
     except:
         console_width = 80
-    i = 1
+    # i = 1
+    batch_iterator = tqdm(validation_ds, desc=f"Processing Validation for Epoch {epoch:02d}")
     with torch.no_grad():
-        for batch in validation_ds:
+        for batch in batch_iterator:
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len)
             encoder_mask = None # default for bidirectional encoding            
             model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device)
@@ -62,20 +65,40 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
             # Evaluate the model predictions
             mse_loss = nn.MSELoss()
             mse = mse_loss(torch.tensor(tgt_seqs), torch.tensor(pred_seqs))
-            print(f"batch {i}: {mse}")
-            i+=1
+            batch_iterator.set_postfix({"val loss": f"{mse.item():6.3f}"})
+            # print(f"batch {i}: {mse}")
+            # i+=1
             losses.append(mse)
 
         val_loss = sum(losses)/len(losses)
-        print("FIGAAAA", val_loss)
+        print(f"val loss: {val_loss.item():6.3f}")
+                
+        # store the mean loss into results
+        results["val_loss"].append(val_loss.item())
+
         writer.add_scalar(f"{print_msg} MSE", val_loss, global_step)
         writer.flush()
 
+    return results
+
 
 def get_ds(config):
-
-    X_raw, y_raw = generate_dataset(config["security"], config["provider"], config["src_len"], config["tgt_len"]) # generate raw dataset
-
+    print("Checking for existing dataset...")
+    dataset_path = f"datasets/{config['security']}_{config['start_year']}-{config['end_year']}_{config['src_len']}-{config['tgt_len']}.npy"
+    if os.path.exists(dataset_path):
+        print("Found existing dataset at ", dataset_path, ". Loading...")
+        with open(dataset_path, "rb") as f:
+            X_raw = np.load(f)
+            y_raw = np.load(f)
+        print("Dataset loaded")
+    else:
+        print("Dataset not found, generating...")
+        X_raw, y_raw = generate_dataset(config["security"], config["provider"], config["src_len"], config["tgt_len"], config["start_year"], config["end_year"]) # generate raw dataset
+        with open(dataset_path, "wb") as f:
+            np.save(f, X_raw)
+            np.save(f, y_raw)
+        print("Generated and saved dataset at ", dataset_path)
+            
     full_ds = SequencesDataset(X_raw, y_raw, config["src_len"], config["tgt_len"]) # generate dataset object
 
     # 80% training, 10% validation, 10% test
@@ -123,7 +146,7 @@ def train_model(config):
     model = get_model(config).to(device)
 
     # Tensorboard
-    writer = SummaryWriter(config["experiment_name"])
+    writer = SummaryWriter(f"{config['security']}_{config['model_folder']}/{config['experiment_name']}")
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr = config["lr"], eps = 1e-9)
@@ -139,8 +162,15 @@ def train_model(config):
         initial_epoch = state["epoch"] + 1
         optimizer.load_state_dict(state["optimizer_state_dict"])
         global_step = state["global_step"]
+        print("Loading results.json file")
+        with open(get_results_path(config), "r") as f:
+            results = json.load(f)
     else:
         print("No model to preload, starting from scratch")
+        print("Generating results.json file")
+        with open(get_results_path(config), "w") as f:
+            results = {"loss": [], "val_loss": []}
+            f.write(json.dumps(results))
 
     loss_fn = nn.MSELoss().to(device)
 
@@ -148,6 +178,7 @@ def train_model(config):
         torch.cuda.empty_cache()
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
+        losses = []
         for batch in batch_iterator:
 
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len) b = Batch
@@ -166,6 +197,7 @@ def train_model(config):
             # Compute the loss using MSE
             #loss = loss_fn(proj_output.view(-1, config["y_size"]), label.view(-1))
             loss = loss_fn(proj_output, label)
+            losses.append(loss.item())
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
             # log the loss
@@ -181,8 +213,17 @@ def train_model(config):
 
             global_step += 1
 
+        # store the mean loss
+        mean_loss = sum(losses)/len(losses)
+        print(results)
+        results["loss"].append(mean_loss)
+
         # run validation
-        run_validation(model, val_dataloader, config["tgt_len"], device, "Validation", global_step, writer) # run validation
+        results = run_validation(model, val_dataloader, config["tgt_len"], device, "Validation", global_step, writer, epoch, results) # run validation
+        
+        # save the results
+        with open(get_results_path(config), "w") as f:
+            f.write(json.dumps(results))
 
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
         torch.save({
@@ -196,4 +237,3 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     config = get_config()
     train_model(config)
-

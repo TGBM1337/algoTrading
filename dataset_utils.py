@@ -59,6 +59,8 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
 
     """Dataset generator. This is probably just pure crap that returns X, y"""
 
+    tgt_len -= 1 # the minus one is for keeping a spot for the special token in the target sequence
+
     seq_len = src_len + tgt_len
     data = [] # all years dataframes
     for year in range(first_year, last_year + 1):
@@ -78,7 +80,7 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
     # data = data[:last_index]
     # data_splits = np.array_split(data, data.shape[0] / seq_len)
     # data_splits = np.asarray(data_splits)
-    data_splits = np.asarray(np.array_split(data[:data.shape[0] // seq_len * seq_len], data[:data.shape[0] // seq_len * seq_len].shape[0] / seq_len)) # splitting into sequences of seq len
+    data_splits = np.asarray(np.array_split(data[:data.shape[0] // seq_len * seq_len], data[:data.shape[0] // seq_len * seq_len].shape[0] / seq_len)) # splitting into sequences of seq len 
 
     norm_dates = []
     for i in range(data_splits.shape[0]):
@@ -94,5 +96,9 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
 
     X = data_splits[:, :src_len, :]
     y = data_splits[:, -tgt_len:, :]
+
+    # adding special token to the beginning of the target sequences
+    special_token = np.zeros((y.shape[0], 1, y.shape[2]))
+    y = np.concatenate((special_token, y), axis = 1) # adding the special token to the beginning of the target sequences
 
     return convert_nested_arrays_to_floats(X), convert_nested_arrays_to_floats(y)
