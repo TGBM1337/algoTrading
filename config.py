@@ -22,7 +22,7 @@ def get_config():
         "dropout": 0.1,
         "model_folder": "checkpoints",
         "model_basename": "algoTransformer",
-        "preload": "latest", # "latest" or epoch or None 
+        "preload": None, # "latest" or epoch or None 
         "experiment_name": "runs/tmodel",
         "datasource": "EUR_USD",
         "max_train_size": None,

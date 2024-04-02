@@ -36,7 +36,7 @@ def inference_decoding(model, source, source_mask, seq_len, device):
         next_element = model.project(out[:, -1]) # è già sul device? in caso rimuovere il .to(device) che c'è sotto
         decoder_input = torch.cat([decoder_input, next_element.unsqueeze(1).to(device)], dim = 1) # da capire la dimensione di next_element
     
-    return decoder_input.squeeze(0)
+    return decoder_input
 
 
 def run_validation(model, validation_ds, seq_len, device, print_msg, global_step, writer, epoch, results):
@@ -44,6 +44,7 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
     model.eval()
 
     losses = []
+    compounded_returns_losses = []
 
     try:
         with os.popen("stty size", "r") as console:
@@ -51,7 +52,6 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
             console_width = int(console_width)
     except:
         console_width = 80
-    # i = 1
     batch_iterator = tqdm(validation_ds, desc=f"Processing Validation for Epoch {epoch:02d}")
     with torch.no_grad():
         for batch in batch_iterator:
@@ -59,25 +59,35 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
             encoder_mask = None # default for bidirectional encoding            
             model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device)
 
-            tgt_seqs = batch["label"]
-            pred_seqs = model_out.detach().cpu()
-
             # Evaluate the model predictions
             mse_loss = nn.MSELoss()
-            mse = mse_loss(torch.tensor(tgt_seqs), torch.tensor(pred_seqs))
+            mse = mse_loss(torch.tensor(batch["label"]), torch.tensor(model_out))
             batch_iterator.set_postfix({"val loss": f"{mse.item():6.3f}"})
-            # print(f"batch {i}: {mse}")
-            # i+=1
             losses.append(mse)
 
-        val_loss = sum(losses)/len(losses)
-        print(f"val loss: {val_loss.item():6.3f}")
-                
-        # store the mean loss into results
-        results["val_loss"].append(val_loss.item())
+            # Extract compounded returns for model_out and label
+            proj_output_compound, label_compound = calculate_batch_cumulative_returns(model_out, batch["label"])
+            compounded_returns_loss = mse_loss(proj_output_compound, label_compound)
+            compounded_returns_losses.append(compounded_returns_loss)
+            batch_iterator.set_postfix({"C_loss": f"{compounded_returns_loss.item():6.3f}"})
 
-        writer.add_scalar(f"{print_msg} MSE", val_loss, global_step)
+        # calculates and logs mean val loss
+        mean_val_loss = sum(losses)/len(losses)
+        print(f"\n Mean val loss: {mean_val_loss.item():6.3f}")
+                
+        # store the mean val loss into results
+        results["val_loss"].append(mean_val_loss.item())
+
+        # calculates and logs mean val C_loss
+        mean_val_c_loss = sum(compounded_returns_losses)/len(compounded_returns_losses)
+        print(f"\n Mean val C_loss: {mean_val_c_loss.item():6.3f}")
+
+        # store the mean val C_loss
+        results["val_C_loss"].append(mean_val_c_loss.item())
+
+        writer.add_scalar(f"{print_msg} MSE", mean_val_loss, global_step)
         writer.flush()
+        # This does not account for further metrics updates
 
     return results
 
@@ -169,7 +179,7 @@ def train_model(config):
         print("No model to preload, starting from scratch")
         print("Generating results.json file")
         with open(get_results_path(config), "w") as f:
-            results = {"loss": [], "val_loss": []}
+            results = {"loss": [], "val_loss": [], "C_loss": [], "val_C_loss": []}
             f.write(json.dumps(results))
 
     loss_fn = nn.MSELoss().to(device)
@@ -179,6 +189,7 @@ def train_model(config):
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
         losses = []
+        compounded_returns_losses = []
         for batch in batch_iterator:
 
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len) b = Batch
@@ -192,7 +203,13 @@ def train_model(config):
             proj_output = model.project(decoder_output) # (b, seq_len, y_size)
 
             # Compare the output with the label
-            label = batch["label"].to(device) # (b, seq_len)
+            label = batch["label"].to(device) # (b, seq_len, y_size)
+
+            # Extract compounded returns for proj_output and label
+            proj_output_compound, label_compound = calculate_batch_cumulative_returns(proj_output, label)
+            compounded_returns_loss = loss_fn(proj_output_compound, label_compound)
+            compounded_returns_losses.append(compounded_returns_loss.item())
+            batch_iterator.set_postfix({"C_loss": f"{compounded_returns_loss.item():6.3f}"})
 
             # Compute the loss using MSE
             #loss = loss_fn(proj_output.view(-1, config["y_size"]), label.view(-1))
@@ -215,8 +232,11 @@ def train_model(config):
 
         # store the mean loss
         mean_loss = sum(losses)/len(losses)
-        print(results)
         results["loss"].append(mean_loss)
+
+        # store the mean c-loss
+        mean_c_loss = sum(compounded_returns_losses)/len(compounded_returns_losses)
+        results["C_loss"].append(mean_c_loss)
 
         # run validation
         results = run_validation(model, val_dataloader, config["tgt_len"], device, "Validation", global_step, writer, epoch, results) # run validation
@@ -232,6 +252,21 @@ def train_model(config):
             "optimizer_state_dict": optimizer.state_dict(),
             "global_step": global_step
         }, model_filename)
+
+
+def calculate_batch_cumulative_returns(proj_output, label):
+
+    adjusted_predicted_returns = 1 + proj_output[:, :, 0] # for now we assume close is in 0 dimension
+    adjusted_actual_returns = 1 + label[:, :, 0]
+
+    cumulative_predicted_compound_returns = torch.cumprod(adjusted_predicted_returns, dim = -1)
+    cumulative_actual_compound_returns = torch.cumprod(adjusted_actual_returns, dim = -1)
+
+    cumulative_predicted_compound_returns -= 1
+    cumulative_actual_compound_returns -= 1
+
+    return cumulative_predicted_compound_returns, cumulative_actual_compound_returns 
+
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
