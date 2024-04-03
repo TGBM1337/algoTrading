@@ -1,1 +1,1 @@
-{"loss": [1.8930798768997192], "val_loss": [0.4787997305393219], "C_loss": [1.0178805293482523e+23], "val_C_loss": [0.9411139488220215]}
+{"loss": [], "C_loss": [], "cumulative_accuracy": [], "val_loss": [], "val_C_loss": [], "val_cumulative_accuracy": [], "test_loss": null, "test_C_loss": null, "test_cumulative_accuracy": null}

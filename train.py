@@ -15,13 +15,15 @@ from tqdm import tqdm
 import os
 import json
 import numpy as np
+import pprint 
 
-def inference_decoding(model, source, source_mask, seq_len, device):
+
+def inference_decoding(model, source, source_mask, seq_len, device, config):
 
     # Precompute the encoder output and reuse it for every step
     encoder_output = model.encode(source, source_mask)  #(Batch, src_len, d_model)
     # Initialize the decoder input
-    decoder_input = torch.zeros(encoder_output.shape[0], 1, 10).type_as(source).to(device)
+    decoder_input = torch.zeros(encoder_output.shape[0], 1, config["y_size"]).type_as(source).to(device)
     while True: # Autoregressive generation
         if decoder_input.size(1) == seq_len:
             break
@@ -46,50 +48,132 @@ def run_validation(model, validation_ds, seq_len, device, print_msg, global_step
     losses = []
     compounded_returns_losses = []
 
+    pred_classes = [] # these contain data for the cumulative accuracy classification metric
+    actual_classes = []
+
+    # !!! Evaluate wheter to keep or remove this try/except block !!! 
     try:
         with os.popen("stty size", "r") as console:
             _, console_width = console.read().split()
             console_width = int(console_width)
     except:
         console_width = 80
+    # !!! Evaluate wheter to keep or remove this try/except block !!! 
+
     batch_iterator = tqdm(validation_ds, desc=f"Processing Validation for Epoch {epoch:02d}")
     with torch.no_grad():
         for batch in batch_iterator:
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len)
             encoder_mask = None # default for bidirectional encoding            
-            model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device)
+            model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device, config)
+
+            tgt_seqs = batch["label"].to(device) 
 
             # Evaluate the model predictions
             mse_loss = nn.MSELoss()
-            mse = mse_loss(torch.tensor(batch["label"]), torch.tensor(model_out))
-            batch_iterator.set_postfix({"val loss": f"{mse.item():6.3f}"})
+            mse = mse_loss(torch.tensor(tgt_seqs), torch.tensor(model_out))
             losses.append(mse)
 
             # Extract compounded returns for model_out and label
-            proj_output_compound, label_compound = calculate_batch_cumulative_returns(model_out, batch["label"])
+            proj_output_compound, label_compound = calculate_batch_cumulative_returns(model_out, tgt_seqs)
             compounded_returns_loss = mse_loss(proj_output_compound, label_compound)
             compounded_returns_losses.append(compounded_returns_loss)
-            batch_iterator.set_postfix({"C_loss": f"{compounded_returns_loss.item():6.3f}"})
+            batch_iterator.set_postfix({"val loss": f"{mse.item():6.3f}", "val C_loss": f"{compounded_returns_loss.item():6.3f}"})
+
+            # append batch accuracy on returns
+            tensor_pred_classes, tensor_actual_classes = classify_cumulative_returns(proj_output_compound, label_compound)
+            pred_classes.extend(tensor_pred_classes.tolist())
+            actual_classes.extend(tensor_actual_classes.tolist())
 
         # calculates and logs mean val loss
         mean_val_loss = sum(losses)/len(losses)
-        print(f"\n Mean val loss: {mean_val_loss.item():6.3f}")
-                
+       
         # store the mean val loss into results
         results["val_loss"].append(mean_val_loss.item())
 
         # calculates and logs mean val C_loss
         mean_val_c_loss = sum(compounded_returns_losses)/len(compounded_returns_losses)
-        print(f"\n Mean val C_loss: {mean_val_c_loss.item():6.3f}")
-
+        
         # store the mean val C_loss
         results["val_C_loss"].append(mean_val_c_loss.item())
 
+        # Calculate the overall accuracy on returns
+        pred_classes = torch.tensor(pred_classes)
+        actual_classes = torch.tensor(actual_classes)
+        accuracy = (pred_classes == actual_classes).sum() / pred_classes.shape[0]
+        results["val_cumulative_accuracy"].append(accuracy.item())
+      
+        # Printing epoch metrics to the console
+        print(f"VALIDATION RESULTS: Epoch {epoch} - Loss: {mean_val_loss:6.3f} - C_Loss: {mean_val_c_loss:6.3f} - Binary classification accuracy: {accuracy.item():6.3f}\n")
+
+    
+        # !!! This does not account for further metrics updates !!!
         writer.add_scalar(f"{print_msg} MSE", mean_val_loss, global_step)
         writer.flush()
-        # This does not account for further metrics updates
+        # !!! This does not account for further metrics updates !!!
 
     return results
+
+
+def evaluate_inference(model, test_dataloader, seq_len, device, results):
+    model.eval()
+
+    losses = []
+    compounded_returns_losses = []
+
+    batch_iterator = tqdm(test_dataloader, desc=f"Running inference")
+    pred_classes = []
+    actual_classes = []
+    
+    with torch.no_grad():
+        for batch in batch_iterator:
+            encoder_input = batch["encoder_input"].to(device) # (b, seq_len)
+            encoder_mask = None # default for bidirectional encoding            
+            model_out = inference_decoding(model, encoder_input, encoder_mask, seq_len, device, config)
+
+            tgt_seqs = batch["label"].to(device) 
+
+            # Evaluate the model predictions
+            mse_loss = nn.MSELoss()
+            mse = mse_loss(torch.tensor(tgt_seqs), torch.tensor(model_out))
+            losses.append(mse)
+
+            # Extract compounded returns for model_out and label
+            proj_output_compound, label_compound = calculate_batch_cumulative_returns(model_out, tgt_seqs)
+            compounded_returns_loss = mse_loss(proj_output_compound, label_compound)
+            compounded_returns_losses.append(compounded_returns_loss)
+            batch_iterator.set_postfix({"test loss": f"{mse.item():6.3f}", "test C_loss": f"{compounded_returns_loss.item():6.3f}"})
+
+            # append batch accuracy on returns
+            tensor_pred_classes, tensor_actual_classes = classify_cumulative_returns(proj_output_compound, label_compound)
+            pred_classes.extend(tensor_pred_classes.tolist())
+            actual_classes.extend(tensor_actual_classes.tolist())
+
+
+        # calculates mean test loss
+        mean_test_loss = sum(losses)/len(losses)
+                
+        # store the mean test loss into results
+        results["test_loss"].append(mean_test_loss.item())
+
+        # calculates mean test C_loss
+        mean_test_c_loss = sum(compounded_returns_losses)/len(compounded_returns_losses)
+
+        # store the mean test C_loss
+        results["test_C_loss"] = mean_test_c_loss.item()
+
+        # Calculate the overall accuracy on returns
+        pred_classes = torch.tensor(pred_classes)
+        actual_classes = torch.tensor(actual_classes)
+        accuracy = (pred_classes == actual_classes).sum() / pred_classes.shape[0]
+        results["test_cumulative_accuracy"] = accuracy.item()
+
+        # Printing Test result metrics to the console
+        print(f"\nMean test loss: {mean_test_loss.item():6.3f}")
+        print(f"Mean test C_loss: {mean_test_c_loss.item():6.3f}")
+        print(f"Test accuracy on binary classification of cumulative returns: {accuracy.item():6.3f}\n")
+
+    return results    
 
 
 def get_ds(config):
@@ -148,13 +232,22 @@ def train_model(config):
         print("      On a Windows machine with NVidia GPU, check this video: https://www.youtube.com/watch?v=GMSjDTU8Zlc")
         print("      On a Mac machine, run: pip3 install --pre torch torchvision torchaudio torchtext --index-url https://download.pytorch.org/whl/nightly/cpu")
     device = torch.device(device)
+    
+    # Logging configs to the console
+    print("\n")
+    pp.pprint(config)
+    print("\n")
+
+    model = get_model(config).to(device)
+    print(f"Number of trainable params: {get_n_trainable_params(model)}")
+    print("\n")
 
     # Make sure the weights folder exists
     Path(f"{config['datasource']}_{config['model_folder']}").mkdir(parents=True, exist_ok=True)
 
+    # Get dataset
     train_dataloader, test_dataloader, val_dataloader = get_ds(config)
-    model = get_model(config).to(device)
-
+    
     # Tensorboard
     writer = SummaryWriter(f"{config['security']}_{config['model_folder']}/{config['experiment_name']}")
 
@@ -179,17 +272,20 @@ def train_model(config):
         print("No model to preload, starting from scratch")
         print("Generating results.json file")
         with open(get_results_path(config), "w") as f:
-            results = {"loss": [], "val_loss": [], "C_loss": [], "val_C_loss": []}
+            results = {"loss": [], "C_loss": [], "cumulative_accuracy": [], "val_loss": [], "val_C_loss": [], "val_cumulative_accuracy": [], "test_loss": None, "test_C_loss": None, "test_cumulative_accuracy": None}
             f.write(json.dumps(results))
 
     loss_fn = nn.MSELoss().to(device)
 
+    print("\n")
     for epoch in range(initial_epoch, config["num_epochs"]):
         torch.cuda.empty_cache()
         model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
+        batch_iterator = tqdm(train_dataloader, desc=f"Training Epoch {epoch:02d}")
         losses = []
         compounded_returns_losses = []
+        pred_classes = [] # these contain data for the cumulative accuracy classification metric
+        actual_classes = []
         for batch in batch_iterator:
 
             encoder_input = batch["encoder_input"].to(device) # (b, seq_len) b = Batch
@@ -209,13 +305,17 @@ def train_model(config):
             proj_output_compound, label_compound = calculate_batch_cumulative_returns(proj_output, label)
             compounded_returns_loss = loss_fn(proj_output_compound, label_compound)
             compounded_returns_losses.append(compounded_returns_loss.item())
-            batch_iterator.set_postfix({"C_loss": f"{compounded_returns_loss.item():6.3f}"})
+
+            # append batch accuracy over compounded returns
+            tensor_pred_classes, tensor_actual_classes = classify_cumulative_returns(proj_output_compound, label_compound)
+            pred_classes.extend(tensor_pred_classes.tolist())
+            actual_classes.extend(tensor_actual_classes.tolist())
 
             # Compute the loss using MSE
             #loss = loss_fn(proj_output.view(-1, config["y_size"]), label.view(-1))
             loss = loss_fn(proj_output, label)
             losses.append(loss.item())
-            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "C_loss": f"{compounded_returns_loss.item():6.3f}"})
 
             # log the loss
             writer.add_scalar("train loss", loss.item(), global_step)
@@ -238,6 +338,15 @@ def train_model(config):
         mean_c_loss = sum(compounded_returns_losses)/len(compounded_returns_losses)
         results["C_loss"].append(mean_c_loss)
 
+        # Calculate the overall accuracy on returns
+        pred_classes = torch.tensor(pred_classes)
+        actual_classes = torch.tensor(actual_classes)
+        accuracy = (pred_classes == actual_classes).sum() / pred_classes.shape[0]
+        results["cumulative_accuracy"].append(accuracy.item())
+        
+        # Printing epoch metrics to the console
+        print(f"TRAIN RESULTS: Epoch {epoch} - Loss: {mean_loss:6.3f} - C_Loss: {mean_c_loss:6.3f} - Binary classification accuracy: {accuracy.item():6.3f}\n")
+        
         # run validation
         results = run_validation(model, val_dataloader, config["tgt_len"], device, "Validation", global_step, writer, epoch, results) # run validation
         
@@ -252,6 +361,12 @@ def train_model(config):
             "optimizer_state_dict": optimizer.state_dict(),
             "global_step": global_step
         }, model_filename)
+
+    if config["do_test"]:
+        results = evaluate_inference(model, test_dataloader, config["tgt_len"], device, results)
+        # save the results
+        with open(get_results_path(config), "w") as f:
+            f.write(json.dumps(results))
 
 
 def calculate_batch_cumulative_returns(proj_output, label):
@@ -268,7 +383,34 @@ def calculate_batch_cumulative_returns(proj_output, label):
     return cumulative_predicted_compound_returns, cumulative_actual_compound_returns 
 
 
+def classify_cumulative_returns(cumulative_predicted_compound_returns, cumulative_actual_compound_returns):
+
+    """Works with batches"""
+    
+    cumulative_predicted_compound_returns = cumulative_predicted_compound_returns[:, -1]
+    cumulative_actual_compound_returns = cumulative_actual_compound_returns[:, -1]
+    pred_classes = cumulative_predicted_compound_returns >= 0
+    actual_classes = cumulative_actual_compound_returns >= 0
+    
+    return pred_classes, actual_classes
+
+
+def get_n_trainable_params(model):
+    """
+    Calculates the total number of trainable (requires_grad=True) parameters in a PyTorch model.
+    
+    Args:
+    - model (torch.nn.Module): The model to evaluate.
+    
+    Returns:
+    - int: The total number of trainable parameters.
+    """
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return trainable_params
+
+
 if __name__ == "__main__":
+    pp = pprint.PrettyPrinter(indent=1, sort_dicts=False)
     warnings.filterwarnings("ignore")
     config = get_config()
     train_model(config)

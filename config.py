@@ -3,7 +3,7 @@ from pathlib import Path
 def get_config():
 
     config = {
-        "security": "EUR_USD",
+        "security": "SPX500_USD",
         "provider": "oanda",
         "start_year": 2000,
         "end_year": 2024,
@@ -13,8 +13,8 @@ def get_config():
         "lr": 1e-3,
         "src_len": 256,
         "tgt_len": 32,
-        "input_features": 10,
-        "y_size": 10,
+        "input_features": 4,
+        "y_size": 4,
         "d_model": 64,
         "N": 6,
         "h": 8,
@@ -24,10 +24,11 @@ def get_config():
         "model_basename": "algoTransformer",
         "preload": None, # "latest" or epoch or None 
         "experiment_name": "runs/tmodel",
-        "datasource": "EUR_USD",
+        "datasource": "SPX500_USD",
         "max_train_size": None,
         "max_val_size": None,
-        "result_path": "results.json"
+        "result_path": "results.json",
+        "do_test": True
     }
 
     return config

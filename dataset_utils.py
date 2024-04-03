@@ -100,5 +100,9 @@ def generate_dataset(security: str, provider: str, src_len: int, tgt_len:int, fi
     # adding special token to the beginning of the target sequences
     special_token = np.zeros((y.shape[0], 1, y.shape[2]))
     y = np.concatenate((special_token, y), axis = 1) # adding the special token to the beginning of the target sequences
+    
+    # Only keep first 4 dimensions of "y_size"
+    X = X[:, :, :4]
+    y = y[:, :, :4]
 
     return convert_nested_arrays_to_floats(X), convert_nested_arrays_to_floats(y)
